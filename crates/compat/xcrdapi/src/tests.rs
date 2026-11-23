@@ -250,6 +250,8 @@ fn factory_identity_and_vtable_layout() {
         assert!(out.is_null());
         assert_eq!(DStorageGetFactory(IID_IUNKNOWN.as_ptr() as *const c_void, &mut out), S_OK);
         assert_eq!(out, f);
+        assert_eq!(DStorageGetFactory(IID_FACTORY_X1.as_ptr() as *const c_void, &mut out), S_OK);
+        assert_eq!(out, f);
         let set_dbg: unsafe extern "system" fn(*mut c_void, u32) = core::mem::transmute(slot(f, 7));
         set_dbg(f, 0x1);
         assert_eq!(DEBUG_FLAGS.load(Ordering::Relaxed), 1);
