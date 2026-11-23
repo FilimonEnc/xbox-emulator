@@ -266,7 +266,10 @@ unsafe extern "system" fn create_command_list_x(
         unsafe { core::mem::transmute(*real_vtbl(real).add(12)) };
     let dma = !riid.is_null() && unsafe { *riid == crate::dma_list::IID_XBOX_DMA_COMMAND_LIST };
     let pc_riid = if dma { &crate::dma_list::IID_GRAPHICS_COMMAND_LIST as *const Guid } else { riid };
-    let hr = unsafe { f(real, node_mask, list_type, alloc, init_state, pc_riid, ppv) };
+    let mut hr = unsafe { f(real, node_mask, list_type, alloc, init_state, pc_riid, ppv) };
+    if hr == E_NOINTERFACE && !pc_riid.is_null() {
+        hr = unsafe { f(real, node_mask, list_type, alloc, init_state, &crate::dma_list::IID_GRAPHICS_COMMAND_LIST as *const Guid, ppv) };
+    }
     if hr == S_OK && !ppv.is_null() {
         // Hand the title a shim object (Xbox vtable layout + inert inline-buffer fields)
         // instead of the real PC command list; see cmdlist_wrap.
