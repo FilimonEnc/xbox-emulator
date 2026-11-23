@@ -22,13 +22,15 @@ pub fn translate(d: &mut [u8; 16]) {
         1 => PC_PRIORITY_HIGH,
         _ => PC_PRIORITY_HIGH,
     };
+    let pc_flags = flags & 1;
     let pc_node = if node == 0 { 0 } else { 1 };
     put(d, 0, pc_ty);
     put(d, 4, pc_prio);
+    put(d, 8, pc_flags);
     put(d, 12, pc_node);
-    if (pc_ty, pc_prio, pc_node) != (ty, prio, node) {
+    if (pc_ty, pc_prio, pc_flags, pc_node) != (ty, prio, flags, node) {
         record("d3d12_xs", "xone.queue", &format!(
-            "Xbox queue desc type={ty:#x} priority={prio} flags={flags:#x} node={node:#x} -> PC type={pc_ty} priority={pc_prio} node={pc_node}"
+            "Xbox queue desc type={ty:#x} priority={prio} flags={flags:#x} node={node:#x} -> PC type={pc_ty} priority={pc_prio} flags={pc_flags:#x} node={pc_node}"
         ));
     }
 }
@@ -46,4 +48,37 @@ pub unsafe fn create_allocator(real: *mut core::ffi::c_void, t: u32, riid: *cons
         record("d3d12_xs", "xone.CreateCommandAllocator", &format!("Xbox type={t:#x} -> PC type={pc} hr={hr:#010x}"));
     }
     hr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translate_masks_console_queue_flags() {
+        let mut d = [0u8; 16];
+        put(&mut d, 0, 2);
+        put(&mut d, 4, 0);
+        put(&mut d, 8, 2);
+        put(&mut d, 12, 0);
+        translate(&mut d);
+        assert_eq!(get(&d, 0), 2);
+        assert_eq!(get(&d, 4), 0);
+        assert_eq!(get(&d, 8), 0);
+        assert_eq!(get(&d, 12), 0);
+    }
+
+    #[test]
+    fn translate_preserves_disable_gpu_timeout_flag() {
+        let mut d = [0u8; 16];
+        put(&mut d, 0, 2);
+        put(&mut d, 4, 100);
+        put(&mut d, 8, 3);
+        put(&mut d, 12, 0);
+        translate(&mut d);
+        assert_eq!(get(&d, 0), 2);
+        assert_eq!(get(&d, 4), 100);
+        assert_eq!(get(&d, 8), 1);
+        assert_eq!(get(&d, 12), 0);
+    }
 }
