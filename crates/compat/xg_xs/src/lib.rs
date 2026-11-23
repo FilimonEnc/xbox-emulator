@@ -217,6 +217,12 @@ pub unsafe extern "system" fn XGComputeOptimalSwizzleMode(dim: u32, format: u32,
 }
 
 #[no_mangle]
+pub unsafe extern "system" fn XGSuggestSwizzleMode(dim: u32, format: u32, width: u64, height: u32, depth: u32, samples: u32, bind: u32, misc: u32) -> u32 {
+    console!("XGSuggestSwizzleMode", fn(u32, u32, u64, u32, u32, u32, u32, u32) -> u32, dim, format, width, height, depth, samples, bind, misc);
+    XGComputeOptimalSwizzleMode(dim, format, width, height, depth, samples, bind, misc)
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn XGComputeOptimalDepthStencilSwizzleMode(a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, stencil: *mut u32) -> u32 {
     console!("XGComputeOptimalDepthStencilSwizzleMode", fn(usize, usize, usize, usize, usize, usize, usize, usize, *mut u32) -> u32, a1, a2, a3, a4, a5, a6, a7, a8, stencil);
     if !stencil.is_null() {
