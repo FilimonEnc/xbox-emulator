@@ -1016,7 +1016,6 @@ pub unsafe fn cancel(block: *mut Block) {
     }
     s.canceled.store(true, Ordering::Release);
     call(&s, 3, block, 0, core::ptr::null_mut());
-    complete(block, E_ABORT, 0);
 }
 
 unsafe extern "system" fn run_provider(op: u32, d: *const ProviderData) -> i32 {
