@@ -438,19 +438,19 @@ pub unsafe fn encode_export(count: u32, src: *const u8, dst: *mut u8, meta: *mut
 
 pub mod bits;
 pub mod px;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod oracle_px;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod oracle_dec;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod oracle_enc;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod verify_enc;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod oracle_cases;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod oracle_seq;
-#[cfg(test)]
+#[cfg(all(test, feature = "oracle"))]
 mod watch;
 pub mod dec;
 pub mod enc;
