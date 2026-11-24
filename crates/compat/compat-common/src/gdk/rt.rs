@@ -564,7 +564,7 @@ unsafe extern "system" fn q_duplicate(_t: This, q: usize, out: *mut usize) -> i3
 
 unsafe extern "system" fn q_dispatch(_t: This, q: usize, port: u32, timeout: u32) -> bool {
     match port_of(q, port) {
-        Some(p) if p.mode == MANUAL => p.dispatch(timeout),
+        Some(p) => p.dispatch(timeout),
         _ => false,
     }
 }
