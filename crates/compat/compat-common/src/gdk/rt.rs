@@ -333,6 +333,21 @@ fn new_queue(work: Arc<Port>, completion: Arc<Port>, process: bool, owns: bool) 
     Box::into_raw(Box::new(Queue { magic: QMAGIC, work, completion, refs: AtomicUsize::new(1), process, owns, ended: Arc::new(AtomicBool::new(false)), live: Arc::new(Live::default()) })) as usize
 }
 
+fn dup_queue(qq: &Queue) -> usize {
+    qq.work.users.fetch_add(1, Ordering::AcqRel);
+    qq.completion.users.fetch_add(1, Ordering::AcqRel);
+    Box::into_raw(Box::new(Queue {
+        magic: QMAGIC,
+        work: qq.work.clone(),
+        completion: qq.completion.clone(),
+        refs: AtomicUsize::new(1),
+        process: qq.process,
+        owns: false,
+        ended: qq.ended.clone(),
+        live: qq.live.clone(),
+    })) as usize
+}
+
 fn default_process_queue() -> usize {
     static P: AtomicUsize = AtomicUsize::new(0);
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -557,8 +572,7 @@ unsafe extern "system" fn q_duplicate(_t: This, q: usize, out: *mut usize) -> i3
     if out.is_null() {
         return E_INVALIDARG;
     }
-    qq.refs.fetch_add(1, Ordering::AcqRel);
-    *out = if q == 0 { process_queue() } else { q };
+    *out = dup_queue(qq);
     S_OK
 }
 
