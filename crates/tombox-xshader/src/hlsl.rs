@@ -174,7 +174,7 @@ float tb_qn(float x) { return tb_nan(x) ? asfloat(0x7fc00000u) : x; }
 #endif
 float tb_u2f(uint a) { precise float r = (float)(a & 0xffff0000u) + (float)(a & 0xffffu); return r; }
 float tb_log(float x) { uint b = asuint(x); return tb_qn((b == 0x7f800000u) ? x : TB_SEL(b - 0x00800000u < 0x7f000000u && (b & 0x7fffffu) == 0u, (float)((int)(b >> 23) - 127), log2(x))); }
-float tb_fsub(float a, float b) { precise float r = a - b; return tb_qn(r); }
+float tb_fsub(float a, float b) { if ((asuint(a) & 0x7fffffffu) == 0x7f800000u && asuint(a) == asuint(b)) return asfloat(0x7fc00000u); precise float r = a - b; return tb_qn(r); }
 float tb_fract(float x) { if ((asuint(x) & 0x7fffffffu) >= 0x7f800000u) return asfloat(0x7fc00000u); precise float f = x - floor(x); return min(f, asfloat(0x3f7fffffu)); }
 #ifdef TB_FAST_F2H
 uint tb_f2h(float x) { uint b = asuint(x); return (b & 0x7fffffffu) > 0x7f800000u ? (((b >> 16) & 0x8000u) | 0x7e00u | ((b >> 13) & 0x3ffu)) : (uint)asuint16((float16_t)x); }
