@@ -29,6 +29,7 @@ members = [
     "crates/compat/mfh264enc",
     "crates/compat/bink2scarlett",
     "crates/compat/amd_fidelityfx_loader_xbox",
+    "crates/compat/xboxbvhbuilder",
     "crates/compat/xbthunk",
     "crates/compat/gcxaudioext",
     "crates/compat/xvmaudioservice",
