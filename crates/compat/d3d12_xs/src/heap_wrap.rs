@@ -27,15 +27,43 @@ const PAGE_READWRITE: u32 = 0x04;
 static ORIG_CPU: AtomicUsize = AtomicUsize::new(0);
 static ORIG_GPU: AtomicUsize = AtomicUsize::new(0);
 static PATCHED_VTABLES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static PLACED_HEAPS: Mutex<Vec<(usize, u64, u64)>> = Mutex::new(Vec::new());
+
+pub fn register_placed(heap: *mut c_void, placed_va: u64) {
+    if !heap.is_null() && placed_va != 0 {
+        let orig: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 =
+            unsafe { core::mem::transmute(ORIG_CPU.load(Ordering::Relaxed)) };
+        let mut real_base: u64 = 0;
+        if orig as usize != 0 {
+            unsafe { orig(heap, &mut real_base) };
+        }
+        PLACED_HEAPS.lock().unwrap().push((heap as usize, placed_va, real_base));
+        record("d3d12_xs", "heap.placed", &format!("heap={heap:p} placed_va={placed_va:#x} real_base={real_base:#x}"));
+    }
+}
+
+pub fn map_cpu_handle(handle: usize) -> usize {
+    let g = PLACED_HEAPS.lock().unwrap();
+    for &(_, placed_base, real_base) in g.iter() {
+        let placed_base = placed_base as usize;
+        let real_base = real_base as usize;
+        if handle >= placed_base && handle < placed_base + 0x4000_0000 {
+            return real_base.wrapping_add(handle.wrapping_sub(placed_base));
+        }
+    }
+    handle
+}
 
 unsafe extern "system" fn bridge_cpu(heap: *mut c_void) -> u64 {
     let orig: unsafe extern "system" fn(*mut c_void, *mut u64) -> *mut u64 =
         unsafe { core::mem::transmute(ORIG_CPU.load(Ordering::Relaxed)) };
-    let mut out: u64 = 0;
-    unsafe { orig(heap, &mut out) };
+    let mut real_base: u64 = 0;
+    unsafe { orig(heap, &mut real_base) };
+    let placed_base = PLACED_HEAPS.lock().unwrap().iter().find(|e| e.0 == heap as usize).map(|e| e.1);
+    let out = placed_base.unwrap_or(real_base);
     static N: AtomicUsize = AtomicUsize::new(0);
     if N.fetch_add(1, Ordering::Relaxed) < 6 {
-        record("d3d12_xs", "heap.GetCPUHandleBase", &format!("heap={heap:p} base={out:#x}"));
+        record("d3d12_xs", "heap.GetCPUHandleBase", &format!("heap={heap:p} base={out:#x} (real={real_base:#x})"));
     }
     out
 }

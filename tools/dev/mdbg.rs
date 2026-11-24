@@ -300,6 +300,12 @@ fn main() {
                     capture_exit_extra(hproc, evt.tid, &modules);
                     unsafe { TerminateProcess(hproc, code.unwrap_or(1)); }
                     status = DBG_CONTINUE;
+                } else if ecode == 0x80000003 && addr >= exe_base && addr < exe_base + exe_size {
+                    eprintln!("[EXE INT3] hit rva 0x{:x}", addr - exe_base);
+                    capture_regs(hproc, evt.tid);
+                    capture_exit(hproc, evt.tid, exe_base, exe_size, &modules);
+                    unsafe { TerminateProcess(hproc, 1); }
+                    status = DBG_CONTINUE;
                 } else if ecode == 0x80000003 || ecode == 0x4000001F {
                     status = DBG_CONTINUE; // loader/init breakpoint
                 } else if ecode == 0x40010006 || ecode == 0x4001000A {
@@ -338,9 +344,19 @@ fn main() {
                         let mut extra = String::new();
                         if let Some(c) = &caller { extra.push_str(&format!(" caller={c}")); }
                         if let Some(t) = &thrower { extra.push_str(&format!(" thrower_image={t}")); }
-                        if let Some(t) = &ty { extra.push_str(&format!(" type={t}")); }
+                        if let Some(t) = &ty {
+                            extra.push_str(&format!(" type={t}"));
+                            if t == "_com_error" {
+                                if let Some(hr_val) = read_u64(hproc, info(1) + 8) {
+                                    extra.push_str(&format!(" hr=0x{:08X}", hr_val as u32));
+                                }
+                            }
+                        }
                         eprintln!("[EXC] code=0x{:08X} addr=0x{:x} ({}) firstChance={} {}{} n={} t_ms={}",
                             ecode, addr, m, first, exc_name(ecode), extra, v.nth, start.elapsed().as_millis());
+                        if ty.as_deref() == Some("_com_error") {
+                            dump_thread(hproc, evt.tid, &modules);
+                        }
                     } else if v.nth == SITE_LOG_N + 1 {
                         eprintln!("[EXC] code=0x{:08X} site={} type={} repeats; further ones go to the summary only", ecode, site, ty.as_deref().unwrap_or("-"));
                     }
@@ -433,7 +449,7 @@ impl ExcGate {
 
 fn is_runtime_module(n: &str) -> bool {
     let n = n.to_ascii_lowercase();
-    ["ntdll", "kernelbase", "kernel32", "vcruntime", "ucrtbase", "msvcp", "msvcrt", "concrt"].iter().any(|p| n.starts_with(p))
+    ["ntdll", "kernelbase", "kernel32", "vcruntime", "ucrtbase", "msvcp", "msvcrt", "concrt", "d3d12"].iter().any(|p| n.starts_with(p))
 }
 
 fn first_caller(stack: &[u8], modules: &BTreeMap<u64, String>) -> Option<String> {
@@ -571,13 +587,13 @@ fn capture_regs(hproc: HANDLE, tid: u32) {
     //         [r9+8]=parent, parent+0x4C0=globalCPUbase parent+0x4C8=globalGPUbase
     {
         let r9 = g(0xC0); let r8 = g(0xB8);
-        if r9 > 0x10000 {
-            let incr = read_u64(hproc, r9 + 0x1C).map(|v| v as u32).unwrap_or(0);
-            let cpu_base = read_u64(hproc, r9 + 0x20).unwrap_or(0);
-            let gpu_base = read_u64(hproc, r9 + 0x28).unwrap_or(0);
-            let parent = read_u64(hproc, r9 + 0x8).unwrap_or(0);
-            let g_gpu = read_u64(hproc, parent + 0x4C8).unwrap_or(0);
-            let g_cpu = read_u64(hproc, parent + 0x4C0).unwrap_or(0);
+        if r9 > 0x10000 && r9 < 0x7fff_ffff_0000 {
+            let incr = read_u64(hproc, r9.wrapping_add(0x1C)).map(|v| v as u32).unwrap_or(0);
+            let cpu_base = read_u64(hproc, r9.wrapping_add(0x20)).unwrap_or(0);
+            let gpu_base = read_u64(hproc, r9.wrapping_add(0x28)).unwrap_or(0);
+            let parent = read_u64(hproc, r9.wrapping_add(0x8)).unwrap_or(0);
+            let g_gpu = read_u64(hproc, parent.wrapping_add(0x4C8)).unwrap_or(0);
+            let g_cpu = read_u64(hproc, parent.wrapping_add(0x4C0)).unwrap_or(0);
             eprintln!("[EXEBP] onlineHeap r9=0x{r9:x}: incr={incr} blockCPU=0x{cpu_base:x} blockGPU=0x{gpu_base:x} | parent=0x{parent:x} gCPU=0x{g_cpu:x} gGPU=0x{g_gpu:x} | HANDLE(r8)=0x{r8:x}");
         }
     }
@@ -585,17 +601,17 @@ fn capture_regs(hproc: HANDLE, tid: u32) {
     // GPU base, rdi = subheap. Dump the global cached bases.
     {
         let rsi = g(0xA8); let rcx = g(0x80); let rdi = g(0xB0);
-        if rsi > 0x10000 {
-            let g_cpu = read_u64(hproc, rsi + 0x4C0).unwrap_or(0);
-            let g_gpu = read_u64(hproc, rsi + 0x4C8).unwrap_or(0);
-            let g_incr = read_u64(hproc, rsi + 0x4B8).map(|v| v as u32).unwrap_or(0);
+        if rsi > 0x10000 && rsi < 0x7fff_ffff_0000 {
+            let g_cpu = read_u64(hproc, rsi.wrapping_add(0x4C0)).unwrap_or(0);
+            let g_gpu = read_u64(hproc, rsi.wrapping_add(0x4C8)).unwrap_or(0);
+            let g_incr = read_u64(hproc, rsi.wrapping_add(0x4B8)).map(|v| v as u32).unwrap_or(0);
             // global heap embedded at parent+0x490: its own cached base at +0x38 (0x490+0x38=0x4C8 already)
             eprintln!("[EXEBP/AllocBlock] parent(rsi)=0x{rsi:x} gIncr={g_incr} gCPU=0x{g_cpu:x} gGPU=0x{g_gpu:x} | newBlockGPU(rcx)=0x{rcx:x} subheap(rdi)=0x{rdi:x}");
         }
     }
     // Try interpreting each reg as a raw wchar* (direct NUL-terminated string).
     for (name, rv) in [("rcx", g(0x80)), ("rdx", g(0x88)), ("r8", g(0xB8)), ("r9", g(0xC0)), ("rax", g(0x78))] {
-        if rv > 0x10000 {
+        if rv > 0x10000 && rv < 0x7fff_ffff_0000 {
             let mut buf = vec![0u8; 540];
             let mut got = 0usize;
             unsafe { ReadProcessMemory(hproc, rv as *const c_void, buf.as_mut_ptr(), buf.len(), &mut got); }

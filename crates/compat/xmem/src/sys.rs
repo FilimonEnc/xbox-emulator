@@ -9,8 +9,12 @@ pub const MEM_RESET: u32 = 0x0008_0000;
 pub const MEM_TOP_DOWN: u32 = 0x0010_0000;
 pub const MEM_WRITE_WATCH: u32 = 0x0020_0000;
 pub const MEM_RESET_UNDO: u32 = 0x0100_0000;
+pub const MEM_COALESCE_PLACEHOLDERS: u32 = 0x0000_0001;
+pub const MEM_PRESERVE_PLACEHOLDER: u32 = 0x0000_0002;
+pub const MEM_REPLACE_PLACEHOLDER: u32 = 0x0000_4000;
+pub const MEM_RESERVE_PLACEHOLDER: u32 = 0x0004_0000;
 pub const WIN_ALLOC_TYPE_MASK: u32 =
-    MEM_COMMIT | MEM_RESERVE | MEM_RESET | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET_UNDO;
+    MEM_COMMIT | MEM_RESERVE | MEM_RESET | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET_UNDO | MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER;
 
 pub const PAGE_NOACCESS: u32 = 0x01;
 pub const PAGE_READWRITE: u32 = 0x04;
@@ -111,6 +115,19 @@ extern "system" {
         lock: *mut c_void,
         params: *mut c_void,
     ) -> Handle;
+}
+
+#[link(name = "kernelbase", kind = "raw-dylib")]
+extern "system" {
+    pub fn VirtualAlloc2(
+        process: Handle,
+        base: *mut c_void,
+        size: usize,
+        kind: u32,
+        protect: u32,
+        params: *mut c_void,
+        count: u32,
+    ) -> *mut c_void;
 }
 
 #[link(name = "kernel32")]

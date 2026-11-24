@@ -46,6 +46,7 @@ pub unsafe fn install(xbox_vt: &[AtomicUsize], real_vt: *const usize) {
     crate::cl_fw::install_null_slots(xbox_vt);
     crate::gds::install(xbox_vt);
     crate::centroid_bind::install(xbox_vt);
+    crate::global_bind::install(xbox_vt);
     let prev_close = xbox_vt[9].load(Ordering::Relaxed);
     REAL_CLOSE.store(if prev_close != 0 { prev_close } else { *real_vt.add(9) }, Ordering::Relaxed);
     xbox_vt[9].store(close_x as usize, Ordering::Relaxed);

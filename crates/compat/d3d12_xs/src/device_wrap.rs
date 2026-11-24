@@ -159,6 +159,10 @@ unsafe extern "system" fn check_feature_support(
 unsafe extern "system" fn create_descriptor_heap(
     this: *mut DeviceWrapper, pdesc: *const c_void, riid: *const Guid, ppv: *mut *mut c_void,
 ) -> i32 {
+    let placed_va = if !pdesc.is_null() {
+        let p64 = pdesc as *const u64;
+        unsafe { *p64.add(2) }
+    } else { 0 };
     let xone_desc = crate::xone_heap::translate(pdesc); let pdesc = xone_desc.as_ref().map_or(pdesc, |d| d.as_ptr() as *const c_void);
     let real = unsafe { (*this).real };
     let f: unsafe extern "system" fn(*mut c_void, *const c_void, *const Guid, *mut *mut c_void) -> i32 =
@@ -169,6 +173,9 @@ unsafe extern "system" fn create_descriptor_heap(
         // Keep the heap REAL (so it works when passed to SetDescriptorHeaps etc.);
         // patch the shared heap vtable once to fix the handle-getter ABI.
         crate::heap_wrap::ensure_patched(unsafe { *ppv });
+        if placed_va >= 0x1_0000 {
+            crate::heap_wrap::register_placed(unsafe { *ppv }, placed_va);
+        }
         if (crate::rtcap::enabled() || crate::passcap::tables_on()) && !pdesc.is_null() {
             // Binding trace: remember shader-visible heaps (GPU handle -> CPU handle).
             let d = pdesc as *const u32;
@@ -484,6 +491,7 @@ pub(crate) fn alloc_size_for(dim: u32, width: u64, height: u64, arr: u64, mips: 
 /// Args: rcx=this, rdx=pDesc, r8=DestDescriptor (CPU handle, by value).
 /// D3D12_CONSTANT_BUFFER_VIEW_DESC { u64 BufferLocation; u32 SizeInBytes; }.
 unsafe extern "system" fn create_cbv(this: *mut DeviceWrapper, pdesc: *const u8, dest: usize) {
+    let dest = crate::heap_wrap::map_cpu_handle(dest);
     let real = unsafe { (*this).real };
     let f: unsafe extern "system" fn(*mut c_void, *const u8, usize) =
         unsafe { core::mem::transmute(*real_vtbl(real).add(17)) };
@@ -623,6 +631,15 @@ unsafe extern "system" fn create_committed_resource(
             &format!("heapType={htype} dim={dim} width={w} initState={init_state:#x} riid={orig_riid} -> hr={hr:#010x} res={out:p}"));
     }
     hr
+}
+
+unsafe extern "system" fn create_committed_resource_3(
+    this: *mut DeviceWrapper, pheap: *const u32, heap_flags: u32, pdesc: *const u32,
+    init_state: u32, pclear: *const c_void, _protected_session: *mut c_void,
+    _num_castable_formats: u32, _castable_formats: *const u32,
+    riid: *const Guid, ppv: *mut *mut c_void,
+) -> i32 {
+    unsafe { create_committed_resource(this, pheap, heap_flags, pdesc, init_state, pclear, riid, ppv) }
 }
 
 // Forwarding thunk: this(rcx) -> this->real; jmp real->vtbl[slot].
@@ -1281,23 +1298,35 @@ unsafe extern "system" fn real_create_root_signature(real: *mut c_void, mask: u3
     let sent = core::cell::RefCell::new(Vec::<u8>::new());
     let mut gds = unsafe { crate::gds::patch_root_signature(blob, len) };
     let (gb, gl) = gds.as_ref().map_or((blob, len), |(b, _)| (b.as_ptr(), b.len()));
+    let mut gbl = unsafe { crate::global_bind::patch_root_signature(gb, gl) };
+    let (tb, tl) = gbl.as_ref().map_or((gb, gl), |(b, _)| (b.as_ptr(), b.len()));
     let cen = unsafe {
-        crate::centroid_bind::create(gb, gl, &|b, l| {
+        crate::centroid_bind::create(tb, tl, &|b, l| {
             *sent.borrow_mut() = copy(b, l);
             f(real, mask, b, l, riid, ppv)
         }, ppv)
     };
-    let mut hr = match (&cen, &gds) {
-        (Some(hr), _) => *hr,
-        (None, Some((b, _))) => {
+    let mut hr = match (&cen, &gbl, &gds) {
+        (Some(hr), _, _) => *hr,
+        (None, Some((b, _)), _) => {
             *sent.borrow_mut() = b.clone();
             unsafe { f(real, mask, b.as_ptr(), b.len(), riid, ppv) }
         }
-        (None, None) => {
+        (None, None, Some((b, _))) => {
+            *sent.borrow_mut() = b.clone();
+            unsafe { f(real, mask, b.as_ptr(), b.len(), riid, ppv) }
+        }
+        (None, None, None) => {
             *sent.borrow_mut() = copy(blob, len);
             unsafe { f(real, mask, blob, len, riid, ppv) }
         }
     };
+    if hr < 0 && gbl.is_some() {
+        record("d3d12_xs", "global_bind", &format!("root signature with TbGlobal rejected hr={hr:#010x}; created without TbGlobal"));
+        gbl = None;
+        *sent.borrow_mut() = copy(gb, gl);
+        hr = unsafe { f(real, mask, gb, gl, riid, ppv) };
+    }
     if hr < 0 && gds.is_some() {
         record("d3d12_xs", "gds", &format!("root signature with the GDS parameter rejected hr={hr:#010x}; created without GDS"));
         gds = None;
@@ -1312,6 +1341,7 @@ unsafe extern "system" fn real_create_root_signature(real: *mut c_void, mask: u3
     }
     if hr >= 0 && !ppv.is_null() {
         if let Some((_, idx)) = gds { crate::gds::note_root_signature(unsafe { *ppv }, idx) }
+        if let Some((_, idx)) = gbl { crate::global_bind::note_root_signature(unsafe { *ppv }, idx) }
         if cen.is_none() { crate::centroid_bind::forget(unsafe { *ppv }) }
     }
     if hr >= 0 && !ppv.is_null() && !blob.is_null() && len != 0 {
@@ -1673,14 +1703,19 @@ unsafe fn root_from_shaders(real: *mut c_void, desc: &[u8], stages: &[usize]) ->
             unsafe { core::mem::transmute(*real_vtbl(real).add(16)) };
         let mut rs: *mut c_void = core::ptr::null_mut();
         let container = shader_root_container(rts, crate::cbv_raw::enabled());
-        let hr = unsafe { f(real, 0, container.as_ptr(), container.len(), &IID_ROOT_SIGNATURE, &mut rs) };
+        let gbl = unsafe { crate::global_bind::patch_root_signature(container.as_ptr(), container.len()) };
+        let final_c = gbl.as_ref().map_or(&container, |(b, _)| b);
+        let hr = unsafe { f(real, 0, final_c.as_ptr(), final_c.len(), &IID_ROOT_SIGNATURE, &mut rs) };
         if N.fetch_add(1, Ordering::Relaxed) < 6 {
             record("d3d12_xs", "PSO.rootFromShader", &format!("null pRootSignature; built root signature from the shader's RTS0 part ({} bytes, header {:x?}) -> hr={hr:#010x}", rts.len(), rts.chunks_exact(4).take(6).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<_>>()));
             let _ = std::fs::create_dir_all(std::env::temp_dir().join("tombox").join("psodump"));
             let _ = std::fs::write(std::env::temp_dir().join("tombox").join("psodump").join(format!("rts0_{key:016x}.bin")), rts);
         }
         if hr >= 0 && !rs.is_null() {
-            crate::pso_lib::note_root(rs as usize, 0, &container, true);
+            if let Some((_, idx)) = gbl {
+                crate::global_bind::note_root_signature(rs, idx);
+            }
+            crate::pso_lib::note_root(rs as usize, 0, final_c, true);
             m.insert(key, rs as usize);
             return rs as usize;
         }
@@ -2020,6 +2055,7 @@ unsafe extern "system" fn create_placed_resource_x(
 /// limits). The border colour is left zero.
 ///
 unsafe extern "system" fn create_sampler_x(this: *mut DeviceWrapper, xdesc: *const u8, dest: usize) {
+    let dest = crate::heap_wrap::map_cpu_handle(dest);
     let real = unsafe { (*this).real };
     let dflt = crate::device_console_fix::default_xsamp();
     let x: &[u8] = if xdesc.is_null() { &dflt } else { unsafe { core::slice::from_raw_parts(xdesc, crate::device_console_fix::XSAMP_SIZE) } };
@@ -2076,6 +2112,13 @@ dev_stubs!(
     (d65,65),(d66,66),(d67,67),(d68,68),(d69,69),(d70,70),(d71,71),(d72,72),(d74,74),(d75,75),
     (d76,76),(d77,77),(d78,78),(d79,79),(d80,80),(d81,81),(d82,82),(d83,83),(d84,84),(d85,85),
     (d86,86),(d87,87),(d88,88),(d89,89),(d90,90),
+    (d91,91),(d92,92),(d93,93),(d94,94),(d95,95),(d96,96),(d97,97),(d98,98),(d99,99),(d100,100),
+    (d101,101),(d102,102),(d103,103),(d104,104),(d105,105),(d106,106),(d107,107),(d108,108),(d109,109),(d110,110),
+    (d111,111),(d112,112),(d113,113),(d114,114),(d115,115),(d116,116),(d117,117),(d118,118),(d119,119),(d120,120),
+    (d121,121),(d122,122),(d123,123),(d124,124),(d125,125),(d126,126),(d127,127),(d128,128),(d129,129),(d130,130),
+    (d131,131),(d132,132),(d133,133),(d134,134),(d135,135),(d136,136),(d137,137),(d138,138),(d139,139),(d140,140),
+    (d141,141),(d142,142),(d143,143),(d144,144),(d145,145),(d146,146),(d147,147),(d148,148),(d149,149),(d150,150),
+    (d151,151),(d152,152),(d153,153),(d154,154),(d155,155),(d156,156),(d157,157),(d158,158),(d159,159),
 );
 
 pub(crate) fn vtable() -> *const usize {
@@ -2105,6 +2148,7 @@ pub(crate) fn vtable() -> *const usize {
         v[80] = crate::frame::wait_frame_event_x as usize;
         v[81] = crate::frame::frame_statistics_x as usize;
         v[44] = create_placed_resource_x as usize; // CreatePlacedResourceX
+        v[133] = create_placed_resource_x as usize;
         v[61] = create_sampler_x as usize; // Xbox extended (anisotropic) sampler create
         v[60] = create_gfx_pso_x as usize; // Xbox graphics PSO create -> PC CreateGraphicsPipelineState
         v[55] = create_derived_pso_x as usize; // Xbox derived-PSO create (base PSO + state patches)
@@ -2120,6 +2164,7 @@ pub(crate) fn vtable() -> *const usize {
         v[25] = get_resource_alloc_info as usize; // GetResourceAllocationInfo (null-safe)
         v[17] = create_cbv as usize; // CreateConstantBufferView (256-align size)
         v[27] = create_committed_resource as usize; // CreateCommittedResource (IID subst)
+        v[127] = create_committed_resource_3 as usize;
         v[73] = create_command_list_x as usize;  // Xbox command-list create
         v[38] = crate::device_x::get_copyable_footprints_x as usize;
         v[41] = crate::device_x::create_command_signature_x as usize;

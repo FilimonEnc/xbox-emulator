@@ -77,7 +77,9 @@ fn virtual_alloc_inner(address: *mut c_void, size: usize, alloc_type: u32, attri
         }
     }
     let p = crate::phys::serialized(|| {
-        if wt & MEM_RESERVE != 0 {
+        if wt & (MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER) != 0 {
+            unsafe { VirtualAlloc2(GetCurrentProcess(), base as *mut c_void, len, wt, wp, core::ptr::null_mut(), 0) }
+        } else if wt & MEM_RESERVE != 0 {
             let align = if base == 0 && gran > 0x1_0000 { gran } else { 0 };
             crate::write_watch::reserve_at(base, len, align, wt, wp)
         } else {
@@ -293,6 +295,15 @@ mod tests {
         assert_eq!(win_alloc_type(0x2040_3000), 0x3000);
         assert_eq!(win_alloc_type(0x2000_0000), 0x3000);
         assert_eq!(win_alloc_type(0x0020_2000), 0x0020_2000);
+        assert_eq!(win_alloc_type(0x0004_2000), 0x0004_2000);
+    }
+
+    #[test]
+    fn placeholder_allocation_and_slice() {
+        let p = XMemVirtualAlloc(core::ptr::null_mut(), 0x10_0000, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, 0, PAGE_NOACCESS);
+        assert!(!p.is_null());
+        assert_eq!(unsafe { VirtualFree(p, 0x4_0000, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) }, 1);
+        assert_eq!(unsafe { VirtualFree(p, 0, MEM_RELEASE) }, 1);
     }
 
     #[test]

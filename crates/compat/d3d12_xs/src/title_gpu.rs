@@ -105,7 +105,76 @@ unsafe fn track_kind(obj: *mut c_void, bytes: u64, what: &str, is_heap: bool) ->
 }
 
 pub unsafe fn committed(res: *mut c_void, xdesc: &[u8; 0x38]) -> bool {
-    unsafe { track(res, crate::device_wrap::title_layout_size(xdesc), "committed resource") }
+    let bytes = crate::device_wrap::title_layout_size(xdesc);
+    unsafe { xmem_hook_alloc(res, bytes) };
+    unsafe { track(res, bytes, "committed resource") }
+}
+
+type XMemAllocHookFn = unsafe extern "system" fn(usize, u64) -> *mut c_void;
+type XMemFreeHookFn = unsafe extern "system" fn(*mut c_void, u64);
+
+const XMEM_D3D12_ALLOCATOR_ID: u64 = 128;
+const XMEM_D3D12_GPU_MEM_FLAG: u64 = 1 << 15;
+const XMEM_D3D12_ATTRS: u64 = (XMEM_D3D12_ALLOCATOR_ID << 16) | XMEM_D3D12_GPU_MEM_FLAG;
+
+static XMEM_HOOKS: AtomicUsize = AtomicUsize::new(0);
+
+fn xmem_hooks() -> Option<*const usize> {
+    let mut p = XMEM_HOOKS.load(Ordering::Acquire);
+    if p == 0 {
+        let exe = unsafe { GetModuleHandleA(core::ptr::null()) };
+        let addr = if exe.is_null() {
+            core::ptr::null_mut()
+        } else {
+            unsafe { GetProcAddress(exe, b"__XMemAllocationHooks__\0".as_ptr()) }
+        };
+        p = if addr.is_null() { MISSING } else { addr as usize };
+        let _ = XMEM_HOOKS.compare_exchange(0, p, Ordering::AcqRel, Ordering::Acquire);
+        p = XMEM_HOOKS.load(Ordering::Acquire);
+    }
+    if p == MISSING { None } else { Some(p as *const usize) }
+}
+
+unsafe extern "system" fn on_xmem_destroyed(data: *mut c_void) {
+    if data.is_null() {
+        return;
+    }
+    let ptr = data;
+    if let Some(hooks) = xmem_hooks() {
+        let free_addr = unsafe { *hooks.add(1) };
+        if free_addr != 0 {
+            let free_fn: XMemFreeHookFn = unsafe { core::mem::transmute(free_addr) };
+            unsafe { free_fn(ptr, XMEM_D3D12_ATTRS) };
+        }
+    }
+}
+
+unsafe fn xmem_hook_alloc(res: *mut c_void, bytes: u64) {
+    if res.is_null() || bytes == 0 {
+        return;
+    }
+    let Some(hooks) = xmem_hooks() else { return };
+    let alloc_addr = unsafe { *hooks };
+    if alloc_addr == 0 {
+        return;
+    }
+    let alloc_fn: XMemAllocHookFn = unsafe { core::mem::transmute(alloc_addr) };
+    let ptr = unsafe { alloc_fn(bytes as usize, XMEM_D3D12_ATTRS) };
+    if ptr.is_null() {
+        return;
+    }
+    let qi: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32 =
+        unsafe { core::mem::transmute(slot(res, 0)) };
+    let mut n: *mut c_void = core::ptr::null_mut();
+    if unsafe { qi(res, &IID_DESTRUCTION_NOTIFIER, &mut n) } >= 0 && !n.is_null() {
+        let register: unsafe extern "system" fn(*mut c_void, DestroyedFn, *mut c_void, *mut u32) -> i32 =
+            unsafe { core::mem::transmute(slot(n, 3)) };
+        let release: unsafe extern "system" fn(*mut c_void) -> u32 =
+            unsafe { core::mem::transmute(slot(n, 2)) };
+        let mut id = 0u32;
+        let _ = unsafe { register(n, on_xmem_destroyed, ptr, &mut id) };
+        unsafe { release(n) };
+    }
 }
 
 pub unsafe fn heap(heap: *mut c_void, size: u64) -> bool {

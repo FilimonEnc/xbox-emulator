@@ -12,10 +12,6 @@ const M: &str = "xmem";
 pub use compat_common::physical_pages::PAGE_BYTES as PAGE;
 
 const MEM_PRIVATE: u32 = 0x2_0000;
-const MEM_RESERVE_PLACEHOLDER: u32 = 0x4_0000;
-const MEM_REPLACE_PLACEHOLDER: u32 = 0x4000;
-const MEM_PRESERVE_PLACEHOLDER: u32 = 0x2;
-const MEM_COALESCE_PLACEHOLDERS: u32 = 0x1;
 const SEC_COMMIT: u32 = 0x800_0000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 const MEM_DECOMMIT: u32 = 0x4000;
@@ -104,7 +100,6 @@ impl Drop for Frozen {
 
 #[link(name = "kernelbase", kind = "raw-dylib")]
 extern "system" {
-    fn VirtualAlloc2(process: Handle, base: *mut c_void, size: usize, kind: u32, protect: u32, params: *mut c_void, count: u32) -> *mut c_void;
     fn MapViewOfFile3(file: usize, process: Handle, base: *mut c_void, offset: u64, size: usize, kind: u32, protect: u32, params: *mut c_void, count: u32) -> *mut c_void;
     fn UnmapViewOfFile2(process: Handle, base: *mut c_void, flags: u32) -> i32;
 }
