@@ -1,4 +1,4 @@
-use crate::meta::{PsvResource, RootParam, RootParamKind, RootRange, RootSig};
+use crate::meta::{PsvResource, RootParam, RootParamKind, RootRange, RootSig, StaticSampler};
 use crate::rdna2::{disassemble, Enc, Insn, Opnd};
 use crate::{ShaderExtract, Stage};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -227,11 +227,31 @@ pub fn infer_root_signature(ex: &ShaderExtract) -> Result<RootSig, String> {
         }
     }
 
+    let mut static_samplers = Vec::new();
+    for (i, res) in ex.resources.iter().enumerate() {
+        if res.res_type == 1 && !used_res.contains(&i) {
+            static_samplers.push(StaticSampler {
+                filter: 0x15,
+                address_u: 3,
+                address_v: 3,
+                address_w: 3,
+                max_anisotropy: 1,
+                comparison_func: 1,
+                border_color: 0,
+                min_lod_bits: 0,
+                max_lod_bits: f32::MAX.to_bits(),
+                register: res.lower,
+                space: res.space,
+                visibility: 0,
+            });
+        }
+    }
+    let num_static_samplers = static_samplers.len() as u32;
     Ok(RootSig {
         version: 2,
         flags: 0,
         params,
-        num_static_samplers: 0,
-        static_samplers: Vec::new(),
+        num_static_samplers,
+        static_samplers,
     })
 }

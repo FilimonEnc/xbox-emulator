@@ -1725,6 +1725,32 @@ unsafe fn root_from_shaders(real: *mut c_void, desc: &[u8], stages: &[usize]) ->
 
 const IID_ROOT_SIGNATURE: Guid = Guid { d1: 0xc54a_6b66, d2: 0x72df, d3: 0x4ee8, d4: [0x8b, 0xe5, 0xa9, 0x46, 0xa1, 0x42, 0x92, 0x14] };
 
+unsafe fn inferred_root_from_shader(real: *mut c_void, blob: *const u8, len: usize) -> Option<(usize, Vec<u8>)> {
+    if real.is_null() || blob.is_null() || len == 0 {
+        return None;
+    }
+    let src = unsafe { core::slice::from_raw_parts(blob, len) };
+    let ex = tombox_xshader::extract(src).ok()?;
+    let sig = tombox_xshader::infer_root_signature(&ex).ok()?;
+    let rts = tombox_xshader::serialize_rts0(&sig);
+    let raw_c = wrap_root_signature(&rts);
+    let pc_c = shader_root_container(&rts, crate::cbv_raw::enabled());
+    let gbl = unsafe { crate::global_bind::patch_root_signature(pc_c.as_ptr(), pc_c.len()) };
+    let final_c = gbl.as_ref().map_or(&pc_c, |(b, _)| b);
+    let f: unsafe extern "system" fn(*mut c_void, u32, *const u8, usize, *const Guid, *mut *mut c_void) -> i32 =
+        unsafe { core::mem::transmute(*real_vtbl(real).add(16)) };
+    let mut rs: *mut c_void = core::ptr::null_mut();
+    let hr = unsafe { f(real, 0, final_c.as_ptr(), final_c.len(), &IID_ROOT_SIGNATURE, &mut rs) };
+    if hr < 0 || rs.is_null() {
+        return None;
+    }
+    if let Some((_, idx)) = gbl {
+        crate::global_bind::note_root_signature(rs, idx);
+    }
+    crate::pso_lib::note_root(rs as usize, 0, final_c, true);
+    Some((rs as usize, raw_c))
+}
+
 unsafe extern "system" fn create_gfx_pso_std(this: *mut DeviceWrapper, pdesc: *const u8, riid: *const Guid, ppv: *mut *mut c_void) -> i32 {
     if pdesc.is_null() || unsafe { core::ptr::read_unaligned(pdesc as *const u64) } != 0 {
         return unsafe { create_gfx_pso_x(this, pdesc, 0, core::ptr::null(), riid, ppv) };
@@ -1808,6 +1834,9 @@ unsafe extern "system" fn create_compute_pso_sync(
                     } else {
                         r
                     }
+                } else if let Some((irs, idata)) = unsafe { inferred_root_from_shader(real, p, n) } {
+                    desc[0..8].copy_from_slice(&(irs as u64).to_le_bytes());
+                    crate::shader_xlat::translate_mesh_with_root(src, &idata, &crate::shader_xlat::no_link())
                 } else {
                     r
                 }
@@ -1846,6 +1875,17 @@ unsafe extern "system" fn create_compute_pso_sync(
                 desc[16..24].copy_from_slice(&(code.len() as u64).to_le_bytes());
             }
             desc[0..8].copy_from_slice(&(synth as u64).to_le_bytes());
+            hr = unsafe { crate::pso_lib::compute(real, &desc, riid, ppv, &|d| f(real, d, riid, ppv)) };
+        } else if let Some((irs, idata)) = unsafe { inferred_root_from_shader(real, p, n) } {
+            let src = unsafe { core::slice::from_raw_parts(p, n) };
+            if crate::shader_xlat::needs_external_root_data(src) {
+                if let Ok(c) = crate::shader_xlat::translate_mesh_with_root(src, &idata, &crate::shader_xlat::no_link()) {
+                    code = c;
+                    desc[8..16].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());
+                    desc[16..24].copy_from_slice(&(code.len() as u64).to_le_bytes());
+                }
+            }
+            desc[0..8].copy_from_slice(&(irs as u64).to_le_bytes());
             hr = unsafe { crate::pso_lib::compute(real, &desc, riid, ppv, &|d| f(real, d, riid, ppv)) };
         }
     }

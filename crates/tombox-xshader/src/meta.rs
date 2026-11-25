@@ -252,6 +252,86 @@ pub struct StaticSampler {
 }
 
 /// Parse an RTS0 (serialized root signature) chunk body.
+pub fn serialize_rts0(rs: &RootSig) -> Vec<u8> {
+    let mut out = Vec::new();
+    let push_u32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
+    let n = rs.params.len();
+    let mut body_off = 24 + n * 12;
+    let mut bodies_size = 0usize;
+    for p in &rs.params {
+        bodies_size += match &p.kind {
+            RootParamKind::Table(r) => 8 + r.len() * 24,
+            _ => 12,
+        };
+    }
+    let samplers_off = (body_off + bodies_size) as u32;
+    let ns = rs.static_samplers.len() as u32;
+    out.clear();
+    push_u32(&mut out, 2);
+    push_u32(&mut out, n as u32);
+    push_u32(&mut out, 24);
+    push_u32(&mut out, ns);
+    push_u32(&mut out, samplers_off);
+    push_u32(&mut out, rs.flags);
+    for p in &rs.params {
+        let ty = match &p.kind {
+            RootParamKind::Table(_) => 0,
+            RootParamKind::Constants { .. } => 1,
+            RootParamKind::Descriptor { kind, .. } => *kind,
+        };
+        push_u32(&mut out, ty);
+        push_u32(&mut out, p.visibility);
+        push_u32(&mut out, body_off as u32);
+        body_off += match &p.kind {
+            RootParamKind::Table(r) => 8 + r.len() * 24,
+            _ => 12,
+        };
+    }
+    for p in &rs.params {
+        match &p.kind {
+            RootParamKind::Table(ranges) => {
+                push_u32(&mut out, ranges.len() as u32);
+                let roff = (out.len() + 4) as u32;
+                push_u32(&mut out, roff);
+                for r in ranges {
+                    push_u32(&mut out, r.range_type);
+                    push_u32(&mut out, r.num);
+                    push_u32(&mut out, r.base_register);
+                    push_u32(&mut out, r.space);
+                    push_u32(&mut out, 0);
+                    push_u32(&mut out, r.offset_in_table);
+                }
+            }
+            RootParamKind::Descriptor { register, space, .. } => {
+                push_u32(&mut out, *register);
+                push_u32(&mut out, *space);
+                push_u32(&mut out, 0);
+            }
+            RootParamKind::Constants { register, space, num32 } => {
+                push_u32(&mut out, *register);
+                push_u32(&mut out, *space);
+                push_u32(&mut out, *num32);
+            }
+        }
+    }
+    for s in &rs.static_samplers {
+        push_u32(&mut out, s.filter);
+        push_u32(&mut out, s.address_u);
+        push_u32(&mut out, s.address_v);
+        push_u32(&mut out, s.address_w);
+        push_u32(&mut out, 0);
+        push_u32(&mut out, s.max_anisotropy.max(1));
+        push_u32(&mut out, s.comparison_func.max(1));
+        push_u32(&mut out, s.border_color);
+        push_u32(&mut out, s.min_lod_bits);
+        push_u32(&mut out, if s.max_lod_bits == 0 { f32::MAX.to_bits() } else { s.max_lod_bits });
+        push_u32(&mut out, s.register);
+        push_u32(&mut out, s.space);
+        push_u32(&mut out, s.visibility);
+    }
+    out
+}
+
 pub fn parse_rts0(body: &[u8]) -> Result<RootSig, String> {
     let version = u32_at(body, 0)?;
     let nparams = u32_at(body, 4)? as usize;
