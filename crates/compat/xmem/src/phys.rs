@@ -12,6 +12,7 @@ const M: &str = "xmem";
 pub use compat_common::physical_pages::PAGE_BYTES as PAGE;
 
 const MEM_PRIVATE: u32 = 0x2_0000;
+const SEC_RESERVE: u32 = 0x400_0000;
 const SEC_COMMIT: u32 = 0x800_0000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 const MEM_DECOMMIT: u32 = 0x4000;
@@ -107,6 +108,7 @@ extern "system" {
 struct Section {
     handle: usize,
     live: usize,
+    reserved: bool,
 }
 
 struct Region {
@@ -192,14 +194,23 @@ pub fn allocate(n: usize) -> Option<Vec<u64>> {
         return Some(Vec::new());
     }
     let bytes = (n as u64).checked_mul(PAGE as u64)?;
-    let h = unsafe { CreateFileMappingW(usize::MAX, core::ptr::null(), PAGE_EXECUTE_READWRITE | SEC_COMMIT, (bytes >> 32) as u32, bytes as u32, core::ptr::null()) };
-    if h == 0 {
-        return None;
-    }
+    let (h, reserved) = unsafe {
+        let c = CreateFileMappingW(usize::MAX, core::ptr::null(), PAGE_EXECUTE_READWRITE | SEC_COMMIT, (bytes >> 32) as u32, bytes as u32, core::ptr::null());
+        if c != 0 {
+            (c, false)
+        } else {
+            let r = CreateFileMappingW(usize::MAX, core::ptr::null(), PAGE_EXECUTE_READWRITE | SEC_RESERVE, (bytes >> 32) as u32, bytes as u32, core::ptr::null());
+            if r == 0 {
+                return None;
+            }
+            record(M, "XMemAllocatePhysicalPages", &format!("SEC_COMMIT failed for {bytes:#x} bytes; using SEC_RESERVE lazy commit"));
+            (r, true)
+        }
+    };
     Some(with(|s| {
         let sid = s.next_section;
         s.next_section += 1;
-        s.sections.insert(sid, Section { handle: h, live: n });
+        s.sections.insert(sid, Section { handle: h, live: n, reserved });
         let base = s.next_pfn;
         s.next_pfn += n as u64;
         (0..n as u64).map(|i| {
@@ -358,6 +369,15 @@ unsafe fn map_page(s: &mut State, va: usize, pfn: Option<u64>) -> bool {
     }
 }
 
+pub(super) unsafe fn map_view(h: usize, reserved: bool, va: usize, off: u64, size: usize, protect: u32) -> *mut c_void {
+    let p = MapViewOfFile3(h, GetCurrentProcess(), va as *mut c_void, off, size, MEM_REPLACE_PLACEHOLDER, protect, core::ptr::null_mut(), 0);
+    if p as usize == va && reserved && VirtualAlloc(p, size, MEM_COMMIT, protect).is_null() {
+        UnmapViewOfFile2(GetCurrentProcess(), p, MEM_PRESERVE_PLACEHOLDER);
+        return core::ptr::null_mut();
+    }
+    p
+}
+
 unsafe fn try_map_page(s: &mut State, va: usize, pfn: Option<u64>) -> bool {
     let base = match adopt(s, va) {
         Some(b) => b,
@@ -395,8 +415,8 @@ unsafe fn try_map_page(s: &mut State, va: usize, pfn: Option<u64>) -> bool {
     if !to_placeholder(s, va) {
         return false;
     }
-    let h = s.sections[&sid].handle;
-    let p = MapViewOfFile3(h, GetCurrentProcess(), va as *mut c_void, off, PAGE, MEM_REPLACE_PLACEHOLDER, protect, core::ptr::null_mut(), 0);
+    let sec = &s.sections[&sid];
+    let p = map_view(sec.handle, sec.reserved, va, off, PAGE, protect);
     if p as usize != va {
         return false;
     }

@@ -133,8 +133,8 @@ pub(super) unsafe fn try_map_run(s: &mut State, run: &[(usize, Option<u64>)]) ->
     if VirtualFree(lo as *mut c_void, hi - lo, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS) == 0 {
         return false;
     }
-    let h = s.sections[&sid].handle;
-    let p = MapViewOfFile3(h, GetCurrentProcess(), lo as *mut c_void, off, hi - lo, MEM_REPLACE_PLACEHOLDER, protect, core::ptr::null_mut(), 0);
+    let sec = &s.sections[&sid];
+    let p = super::map_view(sec.handle, sec.reserved, lo, off, hi - lo, protect);
     if p as usize != lo {
         if !p.is_null() {
             UnmapViewOfFile2(GetCurrentProcess(), p, MEM_PRESERVE_PLACEHOLDER);
@@ -180,8 +180,8 @@ pub(super) unsafe fn break_run(s: &mut State, va: usize) -> bool {
         r.fragmented.insert(b);
     }
     drop(r);
-    let h = match s.sections.get(&run.sid) {
-        Some(sec) => sec.handle,
+    let (h, reserved) = match s.sections.get(&run.sid) {
+        Some(sec) => (sec.handle, sec.reserved),
         None => return false,
     };
     let protect = region_of(s, lo).map(|b| s.regions[&b].protect).unwrap_or(PAGE_READWRITE);
@@ -197,7 +197,7 @@ pub(super) unsafe fn break_run(s: &mut State, va: usize) -> bool {
         } else {
             for i in 0..n {
                 let p = lo + i * PAGE;
-                let got = MapViewOfFile3(h, GetCurrentProcess(), p as *mut c_void, run.off + (i * PAGE) as u64, PAGE, MEM_REPLACE_PLACEHOLDER, protect, core::ptr::null_mut(), 0);
+                let got = super::map_view(h, reserved, p, run.off + (i * PAGE) as u64, PAGE, protect);
                 if got as usize != p {
                     ok = false;
                 }

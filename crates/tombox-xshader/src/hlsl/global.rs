@@ -70,6 +70,33 @@ void tb_gmem_store_n(uint2 va, uint v, uint nbytes) {
     if (first < nbytes) tb_gstore_bits(tb_gva(va.x, va.y, first, 0), v >> (first * 8u), nbytes - first);
 }
 void tb_gmem_store(uint2 va, uint v) { tb_gmem_store_n(va, v, 4u); }
+uint tb_gmem_atomic_f(uint2 va, float v, bool is_max) {
+    uint2 a = tb_gva(va.x & ~3u, va.y, 0u, 0);
+    uint o;
+    uint w = tb_gwhich(a, o);
+    if (w == 0xffffffffu) { tb_gmiss(va); return 0u; }
+    uint cur = w == 0u ? tb_gw0.Load(o) : tb_gw1.Load(o);
+    [allow_uav_condition] for (;;) {
+        float f = asfloat(cur);
+        if (isnan(v) || (!isnan(f) && (is_max ? !(v > f) : !(v < f)))) break;
+        uint prev;
+        if (w == 0u) tb_gw0.InterlockedCompareExchange(o, cur, asuint(v), prev);
+        else tb_gw1.InterlockedCompareExchange(o, cur, asuint(v), prev);
+        if (prev == cur) break;
+        cur = prev;
+    }
+    return cur;
+}
+uint tb_gmem_atomic_iadd(uint2 va, uint v) {
+    uint2 a = tb_gva(va.x & ~3u, va.y, 0u, 0);
+    uint o;
+    uint w = tb_gwhich(a, o);
+    if (w == 0xffffffffu) { tb_gmiss(va); return 0u; }
+    uint prev = 0u;
+    if (w == 0u) tb_gw0.InterlockedAdd(o, v, prev);
+    else tb_gw1.InterlockedAdd(o, v, prev);
+    return prev;
+}
 #define TB_GMEM 1
 #ifndef TB_AMP_GMEM
 #define tb_gload tb_gmem_load
@@ -163,6 +190,36 @@ impl<'a> Emitter<'a> {
         }
         if ins.raw.first().is_some_and(|w| (w >> 13) & 1 != 0) {
             return Err(format!("{m}: LDS=1 (memory <-> LDS transfer) is not lowered"));
+        }
+        if matches!(m, "flat_atomic_fmin" | "flat_atomic_fmax" | "flat_atomic_add" | "flat_atomic_sub") {
+            let va = self.global_va(ins)?;
+            let data = match ins.src.get(1) {
+                Some(Opnd::Vgpr(d)) => Opnd::Vgpr(*d),
+                _ => return Err(format!("{m}: data operand is not a VGPR")),
+            };
+            self.touch(&data);
+            let t = self.tmp;
+            self.tmp += 1;
+            self.line(&format!("uint2 g{t} = {va};"));
+            let val = r(&data)?;
+            let call = match m {
+                "flat_atomic_fmin" => format!("tb_gmem_atomic_f(g{t}, asfloat({val}), false)"),
+                "flat_atomic_fmax" => format!("tb_gmem_atomic_f(g{t}, asfloat({val}), true)"),
+                "flat_atomic_add" => format!("tb_gmem_atomic_iadd(g{t}, {val})"),
+                _ => format!("tb_gmem_atomic_iadd(g{t}, (uint)(-(int)({val})))"),
+            };
+            let glc = ins.raw.first().is_some_and(|w| (w >> 16) & 1 != 0);
+            if glc {
+                let vd = match ins.dst.first() {
+                    Some(Opnd::Vgpr(v)) => *v,
+                    _ => return Err(format!("{m}: bad vdst")),
+                };
+                self.line(&format!("uint g{t}_0 = 0u; if (exec_lo & 1u) {{ g{t}_0 = {call}; }}"));
+                self.wv(&Opnd::Vgpr(vd), &format!("g{t}_0"))?;
+            } else {
+                self.line(&format!("if (exec_lo & 1u) {{ {call}; }}"));
+            }
+            return Ok(());
         }
         let (store, n, bytes, signed) = width(m).ok_or_else(|| format!("{m}: global/flat operation unsupported"))?;
         let va = self.global_va(ins)?;

@@ -149,10 +149,12 @@ impl Emitter<'_> {
     }
 
     pub(super) fn dg_static_sampler(&self, idx: usize, ss: u16) -> Result<Option<u32>, String> {
-        if self.dg().is_none() {
-            return Ok(None);
-        }
-        let Some(rs) = self.ex.root_sig.as_ref() else { return Ok(None) };
+        let single_psv = || {
+            let mut it = self.ex.resources.iter().filter(|r| r.res_type == 1);
+            let r = it.next()?;
+            if it.next().is_some() { None } else { Some((r.space << 16) | r.lower) }
+        };
+        let Some(rs) = self.ex.root_sig.as_ref() else { return Ok(single_psv()) };
         let vis = match self.ex.stage {
             crate::Stage::Vertex => 1,
             crate::Stage::Hull => 2,
@@ -163,7 +165,7 @@ impl Emitter<'_> {
         };
         let cands: Vec<_> = rs.static_samplers.iter().filter(|s| s.visibility == 0 || s.visibility == vis).collect();
         let pick = match cands.len() {
-            0 => return Ok(None),
+            0 => return Ok(single_psv()),
             1 => *cands[0],
             _ => {
                 let w0 = self.dg_sgpr_literal(idx, ss as u8).ok_or_else(|| format!("literal sampler s{ss}: {} static samplers and the S# word 0 is not a constant", cands.len()))?;

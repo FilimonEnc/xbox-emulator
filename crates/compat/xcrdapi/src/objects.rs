@@ -131,7 +131,7 @@ pub struct FactoryVtbl {
     pub set_debug_flags: unsafe extern "system" fn(*mut c_void, u32),
     pub set_staging_buffer_size: unsafe extern "system" fn(*mut c_void, u32) -> i32,
     pub slot9: unsafe extern "system" fn(*mut c_void) -> i32,
-    pub slot10: unsafe extern "system" fn(*mut c_void) -> i32,
+    pub slot10: unsafe extern "system" fn(*mut c_void, *const u8, *const c_void, *mut *mut c_void) -> i32,
     pub slot11: unsafe extern "system" fn(*mut c_void) -> i32,
     pub slot12: unsafe extern "system" fn(*mut c_void) -> i32,
     pub slot13: unsafe extern "system" fn(*mut c_void) -> i32,
@@ -145,7 +145,10 @@ pub struct FactoryObj {
 }
 
 trap!(factory_slot9, "IDStorageFactoryX", 9);
-trap!(factory_slot10, "IDStorageFactoryX", 10);
+unsafe extern "system" fn factory_create_queue1(this: *mut c_void, desc: *const u8, riid: *const c_void, ppv: *mut *mut c_void) -> i32 {
+    log("IDStorageFactoryX2::CreateQueue1", &format!("desc={desc:p} riid={riid:p} ppv={ppv:p}"));
+    unsafe { factory_create_queue(this, desc, riid, ppv) }
+}
 trap!(factory_slot11, "IDStorageFactoryX", 11);
 trap!(factory_slot12, "IDStorageFactoryX", 12);
 trap!(factory_slot13, "IDStorageFactoryX", 13);
@@ -163,7 +166,7 @@ pub static FACTORY_VTBL: FactoryVtbl = FactoryVtbl {
     set_debug_flags: factory_set_debug_flags,
     set_staging_buffer_size: factory_set_staging_buffer_size,
     slot9: factory_slot9,
-    slot10: factory_slot10,
+    slot10: factory_create_queue1,
     slot11: factory_slot11,
     slot12: factory_slot12,
     slot13: factory_slot13,
@@ -1016,7 +1019,7 @@ unsafe extern "system" fn queue_qi(this: *mut c_void, riid: *const c_void, ppv: 
     }
     unsafe { *ppv = core::ptr::null_mut() };
     match unsafe { read_iid(riid) } {
-        Some(i) if i == IID_QUEUE_X || i == IID_IUNKNOWN => {
+        Some(i) if i == IID_QUEUE_X || i == IID_QUEUE_X2 || i == IID_IUNKNOWN => {
             unsafe { queue_add_ref(this) };
             unsafe { qi_out(ppv, this) };
             S_OK

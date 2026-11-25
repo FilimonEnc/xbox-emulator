@@ -48,6 +48,7 @@ impl Emitter<'_> {
                     }
                     continue;
                 }
+                Enc::Sopk if ins.mnemonic.starts_with("s_setreg") => continue,
                 Enc::Sopp if ins.mnemonic.starts_with("s_branch") || ins.mnemonic.starts_with("s_cbranch") || ins.mnemonic == "s_endpgm" => return false,
                 _ => {}
             }
@@ -140,9 +141,11 @@ impl Emitter<'_> {
         }
         let n = 1u32 << ins.op;
         let base = ins.dst.first().and_then(sreg_num).ok_or("s_load: bad dst")? as u32;
-        for k in 0..n {
-            if self.rm_param(off / 4 + k).is_none() && !self.sgpr_dead_after(idx, base + k) {
-                return Err(format!("s_load at {:#x}: root-memory dword {} is outside the root signature and s{} is read before it is rewritten", ins.offset, off / 4 + k, base + k));
+        if !(n == 16 && self.rm_param(off / 4).is_some()) {
+            for k in 0..n {
+                if self.rm_param(off / 4 + k).is_none() && !self.sgpr_dead_after(idx, base + k) {
+                    return Err(format!("s_load at {:#x}: root-memory dword {} is outside the root signature and s{} is read before it is rewritten", ins.offset, off / 4 + k, base + k));
+                }
             }
         }
         self.rm_loads.insert(idx, off);
@@ -152,9 +155,10 @@ impl Emitter<'_> {
     pub(super) fn sgpr_dead_after(&self, idx: usize, r: u32) -> bool {
         let reads = |ins: &Insn| {
             let span = match ins.enc {
+                Enc::Smem if ins.op <= 4 => 2,
                 Enc::Smem | Enc::Mubuf | Enc::Mtbuf => 4,
                 Enc::Mimg => 8,
-                Enc::Vop1 | Enc::Vop2 | Enc::Vopc | Enc::Sop1 | Enc::Sop2 | Enc::Sopc | Enc::Sopk if !ins.mnemonic.contains("64") => 1,
+                Enc::Vop1 | Enc::Vop2 | Enc::Vop3 | Enc::Vopc | Enc::Sop1 | Enc::Sop2 | Enc::Sopc | Enc::Sopk if !ins.mnemonic.contains("64") => 1,
                 _ => 2,
             };
             ins.src.iter().any(|o| matches!(o, Opnd::Sgpr(n) if (*n as u32..*n as u32 + span).contains(&r)))
@@ -166,6 +170,8 @@ impl Emitter<'_> {
                 _ => 0,
             };
             ins.dst.iter().any(|o| matches!(o, Opnd::Sgpr(n) if (*n as u32..=*n as u32 + extra).contains(&r)))
+                || (matches!(ins.mnemonic.as_str(), "v_readlane_b32" | "v_readfirstlane_b32")
+                    && matches!(ins.dst.first(), Some(Opnd::Vgpr(n)) if *n as u32 == r))
         };
         let at: std::collections::HashMap<usize, usize> = self.insns.iter().enumerate().map(|(i, x)| (x.offset, i)).collect();
         let mut seen = std::collections::HashSet::new();
@@ -208,7 +214,10 @@ impl Emitter<'_> {
         let base = ins.dst.first().and_then(sreg_num).ok_or("s_load: bad dst")?;
         let n = 1u32 << ins.op;
         for k in 0..n {
-            let Some((p, i)) = self.rm_param(off / 4 + k) else { continue };
+            let Some((p, i)) = self.rm_param(off / 4 + k) else {
+                self.ws(&sreg_opnd(base + k as u8), "0u")?;
+                continue;
+            };
             if let Some(RootParamKind::Constants { .. }) = self.rm_kind_of(p) {
                 self.rm_used.insert(p);
                 self.ws(&sreg_opnd(base + k as u8), &format!("tb_rc{p}_{i}"))?;

@@ -1444,9 +1444,9 @@ unsafe fn patch_real_device(real: *mut c_void) {
             record("d3d12_xs", "bindtrace", "could not unprotect the device method table - descriptor trace disabled");
             return;
         }
-        let full = crate::rtcap::enabled();
+        let desc_hooks = crate::rtcap::enabled() || crate::passcap::tables_on();
         for (slot, f) in hooks {
-            if slot == 16 && !full {
+            if slot != 16 && !desc_hooks {
                 continue;
             }
             REAL_ORIG[slot].store(*vt.add(slot), Ordering::Relaxed);
@@ -1781,9 +1781,41 @@ unsafe extern "system" fn create_compute_pso_sync(
         let root = unsafe { root_from_shaders(real, &desc, &[8]) };
         desc[0..8].copy_from_slice(&(root as u64).to_le_bytes());
     }
+    let root = u64::from_le_bytes(desc[0..8].try_into().unwrap()) as usize;
     let p = u64::from_le_bytes(desc[8..16].try_into().unwrap()) as *const u8;
     let n = u64::from_le_bytes(desc[16..24].try_into().unwrap()) as usize;
-    let code = match crate::frame_ev::time(crate::frame_ev::XLAT, || unsafe { crate::shader_xlat::translate(p, n) }) {
+    let ext_root = if root != 0 && !p.is_null() && n != 0 {
+        let src = unsafe { core::slice::from_raw_parts(p, n) };
+        if crate::shader_xlat::needs_external_root_data(src) {
+            crate::console_slots_mesh::root_data(root as *mut c_void).map(|data| (src, data))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut code = match crate::frame_ev::time(crate::frame_ev::XLAT, || {
+        if let Some((src, data)) = ext_root {
+            let r = crate::shader_xlat::translate_mesh_with_root(src, &data, &crate::shader_xlat::no_link());
+            if r.is_ok() {
+                r
+            } else {
+                let synth = unsafe { root_from_shaders(real, &desc, &[8]) };
+                if synth != 0 {
+                    desc[0..8].copy_from_slice(&(synth as u64).to_le_bytes());
+                    if let Some(sdata) = unsafe { crate::console_slots_mesh::root_data(synth as *mut c_void) } {
+                        crate::shader_xlat::translate_mesh_with_root(src, &sdata, &crate::shader_xlat::no_link())
+                    } else {
+                        r
+                    }
+                } else {
+                    r
+                }
+            }
+        } else {
+            unsafe { crate::shader_xlat::translate(p, n) }
+        }
+    }) {
         Ok(c) => c,
         Err(e) => {
             if FAIL.fetch_add(1, Ordering::Relaxed) < 6 {
@@ -1796,8 +1828,27 @@ unsafe extern "system" fn create_compute_pso_sync(
     desc[8..16].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());
     desc[16..24].copy_from_slice(&(code.len() as u64).to_le_bytes());
     let f: unsafe extern "system" fn(*mut c_void, *const u8, *const Guid, *mut *mut c_void) -> i32 =
-        unsafe { core::mem::transmute(*real_vtbl(real).add(11)) }; // PC CreateComputePipelineState
-    let hr = unsafe { crate::pso_lib::compute(real, &desc, riid, ppv, &|d| f(real, d, riid, ppv)) };
+        unsafe { core::mem::transmute(*real_vtbl(real).add(11)) };
+    let mut hr = unsafe { crate::pso_lib::compute(real, &desc, riid, ppv, &|d| f(real, d, riid, ppv)) };
+    if hr == -2147024809i32 && root != 0 && !p.is_null() && n != 0 {
+        let synth = unsafe { root_from_shaders(real, &desc, &[8]) };
+        if synth != 0 {
+            let src = unsafe { core::slice::from_raw_parts(p, n) };
+            let retry_code = if crate::shader_xlat::needs_external_root_data(src) {
+                unsafe { crate::console_slots_mesh::root_data(synth as *mut c_void) }
+                    .map(|sdata| crate::shader_xlat::translate_mesh_with_root(src, &sdata, &crate::shader_xlat::no_link()))
+            } else {
+                None
+            };
+            if let Some(Ok(c)) = retry_code {
+                code = c;
+                desc[8..16].copy_from_slice(&(code.as_ptr() as u64).to_le_bytes());
+                desc[16..24].copy_from_slice(&(code.len() as u64).to_le_bytes());
+            }
+            desc[0..8].copy_from_slice(&(synth as u64).to_le_bytes());
+            hr = unsafe { crate::pso_lib::compute(real, &desc, riid, ppv, &|d| f(real, d, riid, ppv)) };
+        }
+    }
     if hr == 0 && !ppv.is_null() && crate::rtcap::enabled() {
         crate::rtcap::note_compute_pso(unsafe { *ppv } as usize, code.as_ptr() as usize);
     }
@@ -2188,10 +2239,10 @@ pub(crate) fn vtable() -> *const usize {
         crate::console_slots::install_device(&mut v, &console_defaults);
         crate::cmdlist_validate::hook_device(&mut v);
         crate::title_heap::hook_device(&mut v);
+        crate::cbv_raw::hook_device(&mut v);
         crate::console_slots_mesh::install_device(&mut v);
         crate::depth_uav::hook_device(&mut v);
         crate::ecl_probe::install_device(&mut v);
-        crate::cbv_raw::hook_device(&mut v);
         crate::pso_lib::hook_device(&mut v);
         Box::leak(v.into_boxed_slice()).as_ptr() as usize
     }) as *const usize
@@ -2203,7 +2254,7 @@ pub fn wrap_device(real: *mut c_void) -> *mut c_void {
         unsafe { crate::shader_xlat::probe_typed_atomic64(real) };
         crate::blend_probe::note_device(real);
     }
-    if (crate::rtcap::enabled() || crate::passcap::tables_on()) && !real.is_null() {
+    if !real.is_null() {
         unsafe { patch_real_device(real) };
     }
     let w = Box::new(DeviceWrapper { vtable: vtable(), real, refs: AtomicU32::new(1) });

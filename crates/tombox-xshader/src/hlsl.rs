@@ -581,6 +581,7 @@ struct Emitter<'a> {
     bl_srv: BTreeSet<u32>,
     uses_bvh: bool,
     uses_global: bool,
+    sload_global: BTreeSet<usize>,
     mode_use: mode::ModeUse,
     out_interp: InputInterp,
     user_data: bool,
@@ -1308,6 +1309,7 @@ fn translate_with(ex: &ShaderExtract, out_interp: &InputInterp, user_base_overri
         bl_srv: BTreeSet::new(),
         uses_bvh: false,
         uses_global: false,
+        sload_global: BTreeSet::new(),
         mode_use: mode::ModeUse::default(),
         out_interp: out_interp.clone(),
         user_data,
@@ -2105,7 +2107,7 @@ impl<'a> Emitter<'a> {
         match raw {
             1 => 1,
             2..=7 => 4,
-            _ => raw.div_ceil(4) * 4,
+            _ => (raw.div_ceil(4) * 4).min(512),
         }
     }
 
@@ -2372,6 +2374,15 @@ impl<'a> Emitter<'a> {
                         Some(Sym::Table(t)) => *t,
                         None if !written.contains(&b) => b as u8,
                         Some(Sym::Desc { table, off, k }) if self.dg_table_ptr(*table, *off, *k).is_some() => self.dg_table_ptr(*table, *off, *k).unwrap_or(0),
+                        Some(Sym::Desc { .. }) | None => {
+                            self.uses_global = true;
+                            self.sload_global.insert(idx);
+                            for k in 0..n {
+                                sym.remove(&(d + k as u16));
+                                written.insert(d + k as u16);
+                            }
+                            continue;
+                        }
                         other => {
                             return Err(format!(
                                 "s_load at {:#x}: base s{b} is not a root table pointer ({other:?})",
@@ -3927,6 +3938,39 @@ impl<'a> Emitter<'a> {
                         self.line(&format!("uint t{t} = ({} + {:#x}u) >> 2;", r(&s[0])?, ins.aux.imm as u32));
                         for k in 0..n {
                             self.line(&format!("uint t{t}_{k} = tb_code[(t{t} + {k}u - {}u) % {ndw}u];", self.ex.isa.len() / 4));
+                        }
+                        for k in 0..n {
+                            let dst = sreg_opnd(base + k as u8);
+                            self.touch(&dst);
+                            self.ws(&dst, &format!("t{t}_{k}"))?;
+                        }
+                        return Ok(());
+                    }
+                    if self.sload_global.contains(&idx) {
+                        let n = 1u32 << ins.op;
+                        let base = sreg_num(&d.ok_or("no dst")?).ok_or("bad dst")?;
+                        let sb = sreg_num(&s[0]).ok_or("bad base")?;
+                        self.touch(&sreg_opnd(sb));
+                        self.touch(&sreg_opnd(sb + 1));
+                        let soff = ins.raw.get(1).copied().unwrap_or(0) >> 25;
+                        let add_expr = match soff {
+                            0..=107 => {
+                                let sr = sreg_opnd(soff as u8);
+                                self.touch(&sr);
+                                r(&sr)?
+                            }
+                            124 => {
+                                self.touch(&Opnd::M0);
+                                "m0".to_string()
+                            }
+                            _ => "0u".to_string(),
+                        };
+                        let t = self.tmp;
+                        self.tmp += 1;
+                        let imm = ins.aux.imm as i32;
+                        self.line(&format!("uint2 t{t}_va = tb_gva(s{sb}, s{}, {add_expr}, {imm});", sb + 1));
+                        for k in 0..n {
+                            self.line(&format!("uint t{t}_{k} = tb_gload(tb_gva(t{t}_va.x, t{t}_va.y, {}u, 0), 4u);", k * 4));
                         }
                         for k in 0..n {
                             let dst = sreg_opnd(base + k as u8);

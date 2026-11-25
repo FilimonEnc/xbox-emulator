@@ -550,7 +550,7 @@ pub unsafe fn create_pipeline_state(real: *mut c_void, desc: *const [u64; 2], ri
     let pc_centroid = crate::centroid_bind::tag_rtfmt(root, [0; 8])[0] & crate::centroid_bind::RTFMT_PC_CENTROID != 0;
     let xlat = |ty: u32, b: &[u8], (n, f): (u32, [u32; 8]), feeds: Option<&[u8]>| {
         let link = feeds.map(|ps| crate::shader_xlat::ps_link(ps, pc_centroid)).unwrap_or_else(crate::shader_xlat::no_link);
-        if ty == SUB_MS && root != 0 && crate::shader_xlat::needs_external_root_data(b) {
+        if ty != SUB_PS && root != 0 && crate::shader_xlat::needs_external_root_data(b) {
             if let Some(data) = crate::console_slots_mesh::root_data(root as *mut c_void) {
                 return crate::shader_xlat::translate_mesh_with_root(b, &data, &link).map_err(|e| e.to_string());
             }

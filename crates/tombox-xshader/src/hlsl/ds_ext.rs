@@ -81,11 +81,8 @@ impl Emitter<'_> {
     }
 
     pub(super) fn xlane_header(&self) -> Result<Option<String>, String> {
-        if !self.is_cs || !self.body.contains("tb_xl[") {
+        if !self.is_cs || !self.body.contains("tb_xl[") || self.uses_lds {
             return Ok(None);
-        }
-        if self.uses_lds {
-            return Err("ds_permute/ds_bpermute in a compute shader that also uses LDS: the 32-lane exchange needs groupshared space beyond the 32 KiB LDS mirror".into());
         }
         let (x, y, z) = self.cs_threads();
         let n = x * y * z;
