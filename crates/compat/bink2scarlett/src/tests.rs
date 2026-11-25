@@ -1,23 +1,12 @@
 use super::*;
 
 #[test]
-fn test_bink_lifecycle() {
+fn test_bink_open_fails_honestly() {
     unsafe {
         let b = BinkOpen(core::ptr::null(), 0);
-        assert!(!b.is_null());
-        assert_eq!((*b).width, 1920);
-        assert_eq!((*b).height, 1080);
-        assert_eq!((*b).frame_num, 0);
-        BinkNextFrame(b);
-        assert_eq!((*b).frame_num, 1);
-        BinkGoto(b, 42, 0);
-        assert_eq!((*b).frame_num, 42);
-        assert_eq!(BinkPause(b, 1), 0);
-        assert_eq!((*b).paused, 1);
-        assert_eq!(BinkPause(b, 0), 1);
-        assert_eq!((*b).paused, 0);
-        assert_eq!(BinkGetKeyFrame(b, 10, 0), 10);
-        assert_eq!(BinkGetTrackID(b, 3), 3);
+        assert!(b.is_null());
+        assert_eq!(BinkGetKeyFrame(b, 10, 0), 0);
+        assert_eq!(BinkGetTrackID(b, 3), 0);
         assert_eq!(BinkDoFramePlane(b, 0), 0);
         assert_eq!(BinkGetRealtime(b, core::ptr::null_mut(), core::ptr::null_mut()), 0);
         assert_eq!(BinkRegisterFrameBuffers(b, core::ptr::null_mut()), 0);
