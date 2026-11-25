@@ -4,6 +4,7 @@ use core::ffi::c_void;
 mod tests;
 
 pub const S_OK: i32 = 0;
+pub const E_NOTIMPL: i32 = -2147467263;
 pub const E_POINTER: i32 = -2147467261;
 pub const E_NOINTERFACE: i32 = -2147467262;
 
@@ -84,22 +85,22 @@ unsafe extern "system" fn get_prebuild_info(_this: *mut XboxBvhBuilder, _inputs:
     if out.is_null() {
         return E_POINTER;
     }
-    (*out).result_data_max_size_in_bytes = 65536;
-    (*out).scratch_data_size_in_bytes = 65536;
-    (*out).update_scratch_data_size_in_bytes = 65536;
-    S_OK
+    (*out).result_data_max_size_in_bytes = 0;
+    (*out).scratch_data_size_in_bytes = 0;
+    (*out).update_scratch_data_size_in_bytes = 0;
+    E_NOTIMPL
 }
 
 unsafe extern "system" fn build_bottom_level_as(_this: *mut XboxBvhBuilder, _cmd_list: *mut c_void, _desc: *const c_void) -> i32 {
-    S_OK
+    E_NOTIMPL
 }
 
 unsafe extern "system" fn build_top_level_as(_this: *mut XboxBvhBuilder, _cmd_list: *mut c_void, _desc: *const c_void) -> i32 {
-    S_OK
+    E_NOTIMPL
 }
 
 unsafe extern "system" fn copy_as(_this: *mut XboxBvhBuilder, _cmd_list: *mut c_void, _dst: u64, _src: u64, _mode: u32) -> i32 {
-    S_OK
+    E_NOTIMPL
 }
 
 #[no_mangle]

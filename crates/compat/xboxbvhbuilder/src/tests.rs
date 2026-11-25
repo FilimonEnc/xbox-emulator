@@ -12,11 +12,11 @@ fn test_xbox_bvh_builder_lifecycle() {
             scratch_data_size_in_bytes: 0,
             update_scratch_data_size_in_bytes: 0,
         };
-        assert_eq!(XboxBvhBuilderGetPrebuildInfo(builder_ptr, core::ptr::null(), &mut info), S_OK);
-        assert_eq!(info.result_data_max_size_in_bytes, 65536);
-        assert_eq!(XboxBvhBuilderBuildBottomLevel(builder_ptr, core::ptr::null_mut(), core::ptr::null()), S_OK);
-        assert_eq!(XboxBvhBuilderBuildTopLevel(builder_ptr, core::ptr::null_mut(), core::ptr::null()), S_OK);
-        assert_eq!(XboxBvhBuilderCopy(builder_ptr, core::ptr::null_mut(), 0, 0, 0), S_OK);
+        assert_eq!(XboxBvhBuilderGetPrebuildInfo(builder_ptr, core::ptr::null(), &mut info), E_NOTIMPL);
+        assert_eq!(info.result_data_max_size_in_bytes, 0);
+        assert_eq!(XboxBvhBuilderBuildBottomLevel(builder_ptr, core::ptr::null_mut(), core::ptr::null()), E_NOTIMPL);
+        assert_eq!(XboxBvhBuilderBuildTopLevel(builder_ptr, core::ptr::null_mut(), core::ptr::null()), E_NOTIMPL);
+        assert_eq!(XboxBvhBuilderCopy(builder_ptr, core::ptr::null_mut(), 0, 0, 0), E_NOTIMPL);
         assert_eq!(XboxBvhBuilderDestroy(builder_ptr), S_OK);
     }
 }
